@@ -1,0 +1,32 @@
+[project]
+name = "agent"
+version = "0.0.0"
+description = "agent"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "openai==1.107.3",
+    "pydantic==2.14.2",
+    "python-dotenv==1.1.1",
+    "ripgrepy==2.2.0",
+    "structlog==25.4.0",
+    "click==8.1.7",
+    "pydantic-settings==2.15.0",
+    "pyyaml==6.0.3",
+    "prompt-toolkit==3.0.53",
+    "requests==2.34.2",
+]
+
+[project.scripts]
+agent = "agent.cli:main"
+
+[build-system]
+requires      = [ "setuptools" ]
+build-backend = "setuptools.build_meta"
+
+[dependency-groups]
+dev = [
+    "pytest==9.2.0",
+    "ruff==0.13.0",
+    "ty==0.0.95",
+]

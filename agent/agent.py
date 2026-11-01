@@ -1,0 +1,228 @@
+import json
+import re
+from typing import Any, Literal, cast
+
+import structlog
+from openai import OpenAI
+from openai.types.chat import ChatCompletionMessageParam
+from pydantic import BaseModel, Field, ValidationError
+
+from .session import Session
+from .skills import Skill
+from .tools import TOOL_REGISTRY, Tool, UseSkillTool
+
+logger = structlog.get_logger(__name__)
+
+
+class ToolCall(BaseModel):
+    """Represents a call to a specific tool."""
+
+    tool_name: str = Field(..., description="The name of the tool to call.")
+    arguments: dict[str, Any] = Field(
+        ..., description="A dictionary of arguments for the tool."
+    )
+
+
+class AgentAction(BaseModel):
+    """The action the agent decides to take."""
+
+    action: Literal["call_tool", "finish"] = Field(
+        ...,
+        description="'call_tool' to use a tool, or 'finish' when the task is complete.",
+    )
+    tool_call: ToolCall | None = Field(
+        None, description="Details if the action is 'call_tool'."
+    )
+    final_answer: str | None = Field(
+        None, description="The final answer if the action is 'finish'."
+    )
+    # Optional: models sometimes omit it, and a missing field should not end the task.
+    reasoning: str = Field("", description="The agent's reasoning for this action.")
+
+
+class Task(BaseModel):
+    """The initial task given to the agent."""
+
+    description: str = Field(
+        ..., description="A clear description of the task to be performed."
+    )
+    instructions: str = Field(
+        "", description="Extra instructions for the model, e.g. a skill's SKILL.md."
+    )
+    max_iterations: int = Field(
+        ..., description="Maximum number of iterations before stopping."
+    )
+
+
+class Agent:
+    def __init__(
+        self,
+        openai_api_key: str,
+        model: str,
+        session: Session | None = None,
+        base_url: str | None = None,
+        skills: dict[str, Skill] | None = None,
+    ):
+        self.client = OpenAI(api_key=openai_api_key, base_url=base_url)
+        self.model = model
+        self.session = session or Session.create()
+        self.skills = skills or {}
+        self.tools: dict[str, Tool] = dict(TOOL_REGISTRY)
+        if self.skills:
+            self.tools[UseSkillTool.name] = UseSkillTool(self.skills)
+        # The system prompt is not persisted; it is rebuilt on every request.
+        # Error entries are kept in the file for debugging but never sent to the API.
+        self.chat_history: list[ChatCompletionMessageParam] = [
+            cast(ChatCompletionMessageParam, {"role": m.role, "content": m.content})
+            for m in self.session.messages()
+            if m.role != "error"
+        ]
+
+    def _record(self, role: Literal["user", "assistant"], content: str) -> None:
+        """Adds a message to the in-memory history and persists it to the session."""
+        self.chat_history.append(
+            cast(ChatCompletionMessageParam, {"role": role, "content": content})
+        )
+        self.session.append(role, content, self.model)
+
+    def _record_error(self, error: Exception) -> None:
+        """Persists a failure to the session file without adding it to the chat history."""
+        self.session.append("error", f"{type(error).__name__}: {error}", self.model)
+
+    def _call_llm(self, system_prompt: str) -> str:
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                *self.chat_history,
+            ],
+            temperature=0.5,
+            response_format={"type": "json_object"},
+        )
+        content = response.choices[0].message.content
+        if not content:
+            raise ValueError("Received empty content from LLM.")
+        return content
+
+    @staticmethod
+    def _parse_action(content: str) -> AgentAction:
+        try:
+            return AgentAction.model_validate_json(content)
+        except ValidationError as original:
+            # The model sometimes wraps the JSON object in extra prose, and that
+            # prose may contain braces (e.g. "{pk}"). Try each '{' in turn and
+            # return the first one that decodes to a valid AgentAction.
+            decoder = json.JSONDecoder()
+            for match in re.finditer(r"\{", content):
+                try:
+                    obj, _ = decoder.raw_decode(content, match.start())
+                    return AgentAction.model_validate(obj)
+                except (json.JSONDecodeError, ValidationError):
+                    continue
+            raise original
+
+    def _get_llm_response(self, system_prompt: str, user_prompt: str) -> AgentAction:
+        """Sends the prompt and parses the reply. Any failure ends the task via a 'finish' action."""
+        self._record("user", user_prompt)
+        try:
+            content = self._call_llm(system_prompt)
+            self._record("assistant", content)
+            return self._parse_action(content)
+        except Exception as e:
+            logger.exception("LLM call or response parsing failed")
+            self._record_error(e)
+            print(f"Error: {e}")
+            return AgentAction(
+                action="finish",
+                tool_call=None,
+                final_answer=f"An internal error occurred: Error calling LLM or parsing response: {e}. Cannot continue.",
+                reasoning="An error prevented the agent from continuing.",
+            )
+
+    def _build_system_prompt(self) -> str:
+        tool_descriptions = [
+            f"- {name}: {tool.description}\n  Parameters: {tool.args_schema.model_json_schema()}"
+            for name, tool in self.tools.items()
+        ]
+        skills_section = ""
+        if self.skills:
+            skill_lines = [
+                f"- {skill.name}: {skill.description}" for skill in self.skills.values()
+            ]
+            skills_section = (
+                "\n\nAvailable skills (specialized instructions you can load):\n"
+                + "\n".join(skill_lines)
+                + "\nIf a task matches a skill's description, call the 'use_skill' tool "
+                "with the skill's name first and follow its instructions."
+            )
+        return (
+            "You are an AI assistant designed to help with tasks by using available tools. "
+            "Your goal is to complete the user's request. "
+            "When you have finished the task and have a final answer, set 'action' to 'finish' "
+            "and provide your 'final_answer'. "
+            "Always provide your 'reasoning' for each step. "
+            "\nAvailable tools:\n"
+            + "\n".join(tool_descriptions)
+            + skills_section
+            + "\n\nYou must always respond with valid JSON matching this AgentAction schema:\n"
+            + f"{AgentAction.model_json_schema()}"
+        )
+
+    def _run_tool(self, tool_call: ToolCall) -> str:
+        """Runs a tool and returns the observation to send back to the model."""
+        tool_name = tool_call.tool_name
+        arguments = tool_call.arguments
+        print(f"\n--- Calling {tool_name} with arguments {arguments} ---")
+
+        if tool_name not in self.tools:
+            observation = f"Error: Tool '{tool_name}' not found. Available tools are: {list(self.tools.keys())}"
+            print(f"Tool Error: {observation}")
+            return f"Your last tool call failed. Observation: {observation}. Please reconsider your next action."
+
+        tool = self.tools[tool_name]
+        try:
+            validated_args = tool.args_schema.model_validate(arguments)
+            observation = tool.run(**validated_args.model_dump())
+            print(f"Tool '{tool_name}' executed successfully.")
+            return f"Tool '{tool_name}' executed. Observation: {observation}\n\nWhat is your next action to fulfill the task?"
+        except Exception as e:
+            observation = (
+                f"Error running tool '{tool_name}': {e}. Arguments: {arguments}"
+            )
+            print(f"Tool Execution Error: {observation}")
+            return f"Tool '{tool_name}' execution failed. Observation: {observation}. Please reconsider your next action."
+
+    def run_task(self, task: Task) -> str | None:
+        """Executes the given task iteratively until completion or max iterations reached."""
+        print(f"--- Starting Task ---\n{task.description}\n---------------------")
+
+        system_prompt = self._build_system_prompt()
+        user_prompt = f"Begin the task: {task.description}"
+        if task.instructions:
+            user_prompt += f"\n\nInstructions:\n{task.instructions}"
+
+        for i in range(task.max_iterations):
+            print(f"\n--- Iteration {i + 1}/{task.max_iterations} ---")
+
+            agent_action = self._get_llm_response(system_prompt, user_prompt)
+            print(f"💡 {agent_action.reasoning}")
+            print(f"Agent Action: {agent_action.action}")
+
+            if agent_action.action == "finish":
+                print("\n--- Task Complete! ---")
+                print(f"Final Answer: {agent_action.final_answer}")
+                return agent_action.final_answer
+
+            if agent_action.tool_call is None:
+                print(
+                    "Error: Agent decided to call a tool but no tool_call details were provided."
+                )
+                user_prompt = "Error: You indicated 'call_tool' but did not provide 'tool_call' details. Please correct your response."
+                continue
+
+            user_prompt = self._run_tool(agent_action.tool_call)
+
+        print(
+            f"\n--- Max iterations ({task.max_iterations}) reached. Task not completed. ---"
+        )
+        return "Task not completed within the allowed iterations."
