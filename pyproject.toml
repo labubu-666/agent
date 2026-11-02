@@ -5,7 +5,7 @@ description = "agent"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
-    "openai==1.107.3",
+    "openai==1.109.1",
     "pydantic==2.14.2",
     "python-dotenv==1.1.1",
     "ripgrepy==2.2.0",
