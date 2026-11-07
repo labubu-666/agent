@@ -13,6 +13,9 @@ from .tools import TOOL_REGISTRY, Tool, UseSkillTool
 
 logger = structlog.get_logger(__name__)
 
+_TOOL_CALL_PATTERN = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL)
+_REASONING_PATTERN = re.compile(r"<reasoning>(.*?)</reasoning>", re.DOTALL)
+
 
 class ToolCall(BaseModel):
     """Represents a call to a specific tool."""
@@ -105,10 +108,31 @@ class Agent:
         return content
 
     @staticmethod
+    def _parse_xml_tool_call(content: str) -> AgentAction | None:
+        """Parses a '<tool_call>{...}</tool_call>' reply. Returns None if it doesn't match."""
+        match = _TOOL_CALL_PATTERN.search(content)
+        if match is None:
+            return None
+        try:
+            tool_call = ToolCall.model_validate_json(match.group(1))
+        except ValidationError:
+            return None
+        reasoning = _REASONING_PATTERN.search(content)
+        return AgentAction(
+            action="call_tool",
+            tool_call=tool_call,
+            reasoning=reasoning.group(1).strip() if reasoning else "",
+        )
+
+    @staticmethod
     def _parse_action(content: str) -> AgentAction:
         try:
             return AgentAction.model_validate_json(content)
         except ValidationError as original:
+            # Some models answer in an XML-style format instead of JSON.
+            xml_action = Agent._parse_xml_tool_call(content)
+            if xml_action is not None:
+                return xml_action
             # The model sometimes wraps the JSON object in extra prose, and that
             # prose may contain braces (e.g. "{pk}"). Try each '{' in turn and
             # return the first one that decodes to a valid AgentAction.
@@ -117,26 +141,42 @@ class Agent:
                 try:
                     obj, _ = decoder.raw_decode(content, match.start())
                     return AgentAction.model_validate(obj)
-                except (json.JSONDecodeError, ValidationError):
+                except json.JSONDecodeError, ValidationError:
                     continue
             raise original
 
-    def _get_llm_response(self, system_prompt: str, user_prompt: str) -> AgentAction:
-        """Sends the prompt and parses the reply. Any failure ends the task via a 'finish' action."""
+    def _get_llm_response(
+        self, system_prompt: str, user_prompt: str
+    ) -> AgentAction | str:
+        """Sends the prompt and parses the reply.
+
+        Returns the parsed action. If the reply cannot be parsed, returns a correction
+        message to send back to the model. An API failure ends the task via a 'finish' action.
+        """
         self._record("user", user_prompt)
         try:
             content = self._call_llm(system_prompt)
-            self._record("assistant", content)
-            return self._parse_action(content)
         except Exception as e:
-            logger.exception("LLM call or response parsing failed")
+            logger.exception("LLM call failed")
             self._record_error(e)
             print(f"Error: {e}")
             return AgentAction(
                 action="finish",
                 tool_call=None,
-                final_answer=f"An internal error occurred: Error calling LLM or parsing response: {e}. Cannot continue.",
+                final_answer=f"An internal error occurred: Error calling LLM: {e}. Cannot continue.",
                 reasoning="An error prevented the agent from continuing.",
+            )
+
+        self._record("assistant", content)
+        try:
+            return self._parse_action(content)
+        except ValidationError as e:
+            logger.warning("Could not parse LLM reply", error=str(e))
+            self._record_error(e)
+            print(f"Error: could not parse LLM reply: {e}")
+            return (
+                "Your last reply was not valid. Respond only with a JSON object matching the "
+                f"AgentAction schema. Parsing failed with: {e}. Please try again."
             )
 
     def _build_system_prompt(self) -> str:
@@ -204,7 +244,11 @@ class Agent:
         for i in range(task.max_iterations):
             print(f"\n--- Iteration {i + 1}/{task.max_iterations} ---")
 
-            agent_action = self._get_llm_response(system_prompt, user_prompt)
+            response = self._get_llm_response(system_prompt, user_prompt)
+            if isinstance(response, str):
+                user_prompt = response
+                continue
+            agent_action = response
             print(f"💡 {agent_action.reasoning}")
             print(f"Agent Action: {agent_action.action}")
 
