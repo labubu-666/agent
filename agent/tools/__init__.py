@@ -2,6 +2,7 @@ from .base import Tool
 from .console import PrintToConsoleTool
 from .files import CreateFileTool, EditFileTool, ListFilesTool, ReadFileTool
 from .http import HttpRequestTool
+from .image import ReadImageTool
 from .replace import ReplaceTextInFileTool
 from .search import SearchTextInDirectoryTool
 from .shell import RunCommandTool
@@ -22,6 +23,7 @@ TOOL_REGISTRY: dict[str, Tool] = {
         EditFileTool(),
         RunCommandTool(),
         HttpRequestTool(),
+        ReadImageTool(),
     ]
 }
 
@@ -34,6 +36,7 @@ __all__ = [
     "ListFilesTool",
     "PrintToConsoleTool",
     "ReadFileTool",
+    "ReadImageTool",
     "ReplaceTextInFileTool",
     "RunCommandTool",
     "SearchTextInDirectoryTool",

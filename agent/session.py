@@ -3,7 +3,7 @@
 import os
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
@@ -43,6 +43,10 @@ class SessionMessage(BaseModel):
     content: str = Field(..., description="The message text.")
     model: str = Field(..., description="The model used for this exchange.")
     timestamp: str = Field(..., description="UTC ISO 8601 timestamp.")
+    image_paths: list[str] = Field(
+        default_factory=list,
+        description="Absolute paths of images attached to this message. The image data is not stored.",
+    )
 
 
 class Session:
@@ -53,7 +57,7 @@ class Session:
         self.path = path
 
     @classmethod
-    def create(cls, root: Path = SESSIONS_DIR) -> "Session":
+    def create(cls, root: Path = SESSIONS_DIR) -> Session:
         """Creates a new session with a fresh uuid7 id."""
         root.mkdir(parents=True, exist_ok=True)
         session_id = str(uuid7())
@@ -62,7 +66,7 @@ class Session:
         return cls(session_id, path)
 
     @classmethod
-    def load(cls, session_id: str, root: Path = SESSIONS_DIR) -> "Session":
+    def load(cls, session_id: str, root: Path = SESSIONS_DIR) -> Session:
         """Loads an existing session. Raises ValueError or FileNotFoundError."""
         normalized = str(uuid.UUID(session_id))
         path = root / f"{normalized}.jsonl"
@@ -78,13 +82,20 @@ class Session:
             if line.strip()
         ]
 
-    def append(self, role: Role, content: str, model: str) -> None:
+    def append(
+        self,
+        role: Role,
+        content: str,
+        model: str,
+        image_paths: list[str] | None = None,
+    ) -> None:
         """Appends one message and flushes it to disk immediately."""
         message = SessionMessage(
             role=role,
             content=content,
             model=model,
-            timestamp=datetime.now(timezone.utc).isoformat(),
+            timestamp=datetime.now(UTC).isoformat(),
+            image_paths=list(image_paths or []),
         )
         with self.path.open("a", encoding="utf-8") as f:
             f.write(message.model_dump_json() + "\n")
