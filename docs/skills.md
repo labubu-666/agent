@@ -36,12 +36,14 @@ Other fields (for example `allowed-tools`) are kept but not enforced.
 
 ## Where skills are loaded from
 
-Skills are loaded from two folders, in priority order:
+Skills are loaded from four folders, in priority order:
 
 1. `<working dir>/.claude/skills/<skill>/SKILL.md` (the project). The working dir is the `--working-dir` option, or the current directory if it isn't set.
-2. `~/.claude/skills/<skill>/SKILL.md` (the user).
+2. `<working dir>/.opencode/skills/<skill>/SKILL.md` (the project).
+3. `~/.claude/skills/<skill>/SKILL.md` (the user).
+4. `~/.config/opencode/skills/<skill>/SKILL.md` (the user).
 
-If two skills share a name, the project one wins. Skills in parent folders are not searched.
+All skills found in these folders are loaded. If two skills share a name, the one from the earlier folder wins, so project skills beat user skills and `.claude` beats `.opencode` at the same level. Skills in parent folders are not searched.
 
 Invalid skills are skipped, and a warning is written to the log file.
 

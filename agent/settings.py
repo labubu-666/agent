@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     base_url: str | None = Field(None, validation_alias="OPENAI_BASE_URL")
     # models https://openrouter.ai/models?fmt=table&order=top-weekly
     model: str = "anthropic/claude-haiku-5.5"
-    max_iterations: int = Field(21, gt=0)
+    max_iterations: int = Field(42, gt=0)
     log_file: Path = Path(".agent-cache") / "agent.jsonl"
     sessions_dir: Path = SESSIONS_DIR
     working_dir: Path | None = None

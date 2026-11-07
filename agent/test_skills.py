@@ -106,5 +106,27 @@ def test_default_skill_dirs_are_project_then_user(monkeypatch, tmp_path):
 
     assert default_skill_dirs() == [
         Path(".claude") / "skills",
+        Path(".opencode") / "skills",
         tmp_path / ".claude" / "skills",
+        tmp_path / ".config" / "opencode" / "skills",
     ]
+
+
+def test_opencode_skills_are_discovered(tmp_path):
+    opencode = tmp_path / ".opencode" / "skills"
+    _write_skill(opencode, "notes", "---\nname: notes\ndescription: Notes.\n---\n")
+
+    skills = discover_skills([opencode])
+
+    assert list(skills) == ["notes"]
+
+
+def test_claude_skill_wins_over_opencode_skill_with_same_name(tmp_path):
+    claude = tmp_path / ".claude" / "skills"
+    opencode = tmp_path / ".opencode" / "skills"
+    _write_skill(claude, "x", "---\nname: shared\ndescription: Claude.\n---\n")
+    _write_skill(opencode, "x", "---\nname: shared\ndescription: OpenCode.\n---\n")
+
+    skills = discover_skills([claude, opencode])
+
+    assert skills["shared"].description == "Claude."
