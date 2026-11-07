@@ -92,6 +92,19 @@ def test_permission_error(tool, test_file, monkeypatch):
     assert "Error: Permission denied when editing file" in result
 
 
+def test_os_error_is_reported(tool, test_file, monkeypatch):
+    test_file.write_text("test", encoding="utf-8")
+
+    def fail(self, *args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(Path, "write_text", fail)
+    result = tool.run(file_path=str(test_file), content="New content")
+
+    assert "Error editing file" in result
+    assert "disk full" in result
+
+
 def test_tool_schema_validation(tool):
     assert tool.name == "edit_file"
     assert tool.description is not None

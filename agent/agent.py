@@ -1,12 +1,15 @@
 import json
 import re
+import subprocess
 from pathlib import Path
 from typing import Any, Literal, cast
 
+import requests
 import structlog
 from openai import OpenAI
 from openai.types.chat import ChatCompletionMessageParam
 from pydantic import BaseModel, Field, ValidationError
+from ripgrepy import RipGrepNotFound
 
 from .session import Session
 from .skills import Skill
@@ -157,7 +160,7 @@ class Agent:
     def _parse_action(content: str) -> AgentAction:
         try:
             return AgentAction.model_validate_json(content)
-        except ValidationError as original:
+        except ValidationError:
             # Some models answer in an XML-style format instead of JSON.
             xml_action = Agent._parse_xml_tool_call(content)
             if xml_action is not None:
@@ -172,7 +175,7 @@ class Agent:
                     return AgentAction.model_validate(obj)
                 except json.JSONDecodeError, ValidationError:
                     continue
-            raise original
+            raise
 
     def _get_llm_response(
         self,
@@ -266,7 +269,14 @@ class Agent:
                 f"Tool '{tool_name}' executed. Observation: {output.text}\n\nWhat is your next action to fulfill the task?",
                 output.image_paths,
             )
-        except Exception as e:
+        except (
+            OSError,
+            ValueError,
+            subprocess.SubprocessError,
+            requests.RequestException,
+            ImageLoadError,
+            RipGrepNotFound,
+        ) as e:
             observation = (
                 f"Error running tool '{tool_name}': {e}. Arguments: {arguments}"
             )
