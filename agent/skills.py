@@ -1,4 +1,4 @@
-"""Discovers Claude-style skills: folders containing a SKILL.md with YAML front matter."""
+"""Discovers Claude- and OpenCode-style skills: folders containing a SKILL.md with YAML front matter."""
 
 import re
 from pathlib import Path
@@ -29,8 +29,17 @@ class Skill(BaseModel):
 
 
 def default_skill_dirs() -> list[Path]:
-    """Returns the skill folders in priority order: project first, then user."""
-    return [Path(".claude") / "skills", Path.home() / ".claude" / "skills"]
+    """Returns the skill folders in priority order: project first, then user.
+
+    Within each level, `.claude` wins over `.opencode`.
+    """
+    home = Path.home()
+    return [
+        Path(".claude") / "skills",
+        Path(".opencode") / "skills",
+        home / ".claude" / "skills",
+        home / ".config" / "opencode" / "skills",
+    ]
 
 
 def _split_front_matter(text: str) -> str:

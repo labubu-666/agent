@@ -30,7 +30,7 @@ def test_defaults_apply_when_only_api_key_is_set(monkeypatch):
     assert settings.openai_api_key.get_secret_value() == "test-key"
     assert settings.base_url is None
     assert settings.model == "anthropic/claude-haiku-5.5"
-    assert settings.max_iterations == 21
+    assert settings.max_iterations == 42
     assert settings.log_file.as_posix() == ".agent-cache/agent.jsonl"
     assert settings.sessions_dir.as_posix() == ".agent-cache/sessions"
 

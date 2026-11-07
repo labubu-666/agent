@@ -210,7 +210,7 @@ def main(session_id: str | None, working_dir: Path | None):
     while True:
         try:
             description = read_input().strip()
-        except (EOFError, KeyboardInterrupt, click.Abort):
+        except EOFError, KeyboardInterrupt, click.Abort:
             click.echo()
             break
 
