@@ -87,6 +87,16 @@ def test_wrong_encoding(tool, tmp_path):
     assert "encoding 'ascii'" in result
 
 
+def test_unknown_encoding_is_reported(tool, tmp_path):
+    test_file = tmp_path / "test.txt"
+    test_file.write_text("test", encoding="utf-8")
+
+    result = tool.run(file_path=str(test_file), encoding="utf-9")
+
+    assert "Error reading file" in result
+    assert "utf-9" in result
+
+
 def test_large_file(tool, tmp_path):
     test_file = tmp_path / "large.txt"
     content = "A" * 50000 + "\n" + "B" * 50000

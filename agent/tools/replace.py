@@ -32,5 +32,5 @@ class ReplaceTextInFileTool(Tool):
             lines[line_number - 1] = new_text + "\n"
             path.write_text("".join(lines), encoding="utf-8")
             return f"Successfully replaced line {line_number} in {file_path}."
-        except Exception as e:
+        except (OSError, UnicodeError) as e:
             return f"Error replacing text in file: {e}"

@@ -55,7 +55,7 @@ class ListFilesTool(Tool):
             return "\n".join(result)
         except PermissionError:
             return f"Error: Permission denied accessing directory '{directory}'."
-        except Exception as e:
+        except OSError as e:
             return f"Error listing files in directory '{directory}': {e}"
 
 
@@ -93,7 +93,7 @@ class ReadFileTool(Tool):
             return f"Error: Cannot decode file '{file_path}' with encoding '{encoding}': {e}"
         except PermissionError:
             return f"Error: Permission denied when reading file '{file_path}'."
-        except Exception as e:
+        except (OSError, LookupError) as e:
             return f"Error reading file '{file_path}': {e}"
 
 
@@ -135,7 +135,7 @@ class CreateFileTool(Tool):
             return f"Successfully created file '{file_path}' with {len(content)} characters."
         except PermissionError:
             return f"Error: Permission denied when creating file '{file_path}'."
-        except Exception as e:
+        except (OSError, UnicodeEncodeError) as e:
             return f"Error creating file '{file_path}': {e}"
 
 
@@ -175,5 +175,5 @@ class EditFileTool(Tool):
             return f"Successfully edited file '{file_path}'. Changed from {original_size} to {new_size} bytes."
         except PermissionError:
             return f"Error: Permission denied when editing file '{file_path}'."
-        except Exception as e:
+        except (OSError, UnicodeEncodeError) as e:
             return f"Error editing file '{file_path}': {e}"

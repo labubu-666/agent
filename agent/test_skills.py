@@ -2,7 +2,12 @@ from pathlib import Path
 
 import pytest
 
-from agent.skills import default_skill_dirs, discover_skills, parse_skill_file
+from agent.skills import (
+    InvalidSkillError,
+    default_skill_dirs,
+    discover_skills,
+    parse_skill_file,
+)
 
 
 def _write_skill(root: Path, folder: str, content: str) -> Path:
@@ -68,7 +73,7 @@ def test_parse_skill_file_keeps_extra_front_matter_fields(tmp_path):
 def test_invalid_skill_files_are_rejected(tmp_path, content, message):
     skill_dir = _write_skill(tmp_path, "bad", content)
 
-    with pytest.raises(ValueError, match=message):
+    with pytest.raises(InvalidSkillError, match=message):
         parse_skill_file(skill_dir / "SKILL.md")
 
 

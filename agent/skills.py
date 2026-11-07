@@ -16,6 +16,10 @@ MAX_DESCRIPTION_LENGTH = 1024
 _NAME_PATTERN = re.compile(r"^[a-z0-9-]+$")
 
 
+class InvalidSkillError(ValueError):
+    """Raised when a SKILL.md file is malformed or fails validation."""
+
+
 class Skill(BaseModel):
     """A skill loaded from a SKILL.md file."""
 
@@ -45,36 +49,38 @@ def default_skill_dirs() -> list[Path]:
 def _split_front_matter(text: str) -> str:
     lines = text.splitlines()
     if not lines or lines[0].strip() != "---":
-        raise ValueError("SKILL.md must start with a '---' YAML front matter block.")
+        raise InvalidSkillError(
+            "SKILL.md must start with a '---' YAML front matter block."
+        )
     for index in range(1, len(lines)):
         if lines[index].strip() == "---":
             return "\n".join(lines[1:index])
-    raise ValueError("SKILL.md front matter is missing its closing '---' line.")
+    raise InvalidSkillError("SKILL.md front matter is missing its closing '---' line.")
 
 
 def parse_skill_file(path: Path) -> Skill:
-    """Parses a SKILL.md file. Raises ValueError if it is not a valid skill."""
+    """Parses a SKILL.md file. Raises InvalidSkillError if it is not a valid skill."""
     path = path.resolve()
     front_matter = yaml.safe_load(_split_front_matter(path.read_text(encoding="utf-8")))
     if not isinstance(front_matter, dict):
-        raise ValueError("SKILL.md front matter must be a YAML mapping.")
+        raise InvalidSkillError("SKILL.md front matter must be a YAML mapping.")
 
     name = front_matter.get("name")
     description = front_matter.get("description")
     if not isinstance(name, str) or not name.strip():
-        raise ValueError("Skill is missing a 'name'.")
+        raise InvalidSkillError("Skill is missing a 'name'.")
     if not isinstance(description, str) or not description.strip():
-        raise ValueError("Skill is missing a 'description'.")
+        raise InvalidSkillError("Skill is missing a 'description'.")
 
     name = name.strip()
     description = description.strip()
     if len(name) > MAX_NAME_LENGTH or not _NAME_PATTERN.match(name):
-        raise ValueError(
+        raise InvalidSkillError(
             f"Invalid skill name '{name}': use lowercase letters, digits and hyphens, "
             f"at most {MAX_NAME_LENGTH} characters."
         )
     if len(description) > MAX_DESCRIPTION_LENGTH:
-        raise ValueError(
+        raise InvalidSkillError(
             f"Skill description is longer than {MAX_DESCRIPTION_LENGTH} characters."
         )
 
@@ -101,7 +107,7 @@ def discover_skills(dirs: list[Path]) -> dict[str, Skill]:
         for skill_file in sorted(root.glob(f"*/{SKILL_FILE_NAME}")):
             try:
                 skill = parse_skill_file(skill_file)
-            except (OSError, yaml.YAMLError, ValueError) as e:
+            except (OSError, yaml.YAMLError, InvalidSkillError) as e:
                 logger.warning(
                     "Skipping invalid skill", path=str(skill_file), error=str(e)
                 )
