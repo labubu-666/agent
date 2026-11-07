@@ -15,9 +15,12 @@ from pydantic import ValidationError
 
 from .agent import Agent, Task
 from .clipboard import (
-    clipboard_has_image,
+    clipboard_image_files,
+    clipboard_image_type,
     find_clipboard_tool,
+    read_clipboard_bytes,
     read_clipboard_text,
+    save_clipboard_image,
 )
 from .session import Session
 from .settings import Settings
@@ -65,15 +68,29 @@ class SlashCommandCompleter(Completer):
                 )
 
 
-IMAGE_NOT_SUPPORTED_MESSAGE = "Pasting images is not supported yet."
 CLIPBOARD_TOOL_MISSING_MESSAGE = (
-    "Pasting images is not supported yet. To detect clipboard images, install "
-    "wl-clipboard (Wayland) or xclip (X11)."
+    "Pasting images needs wl-clipboard (Wayland) or xclip (X11). "
+    "Install one to paste images."
 )
+CLIPBOARD_IMAGE_READ_FAILED_MESSAGE = "Could not read the image from the clipboard."
 
 
-def make_paste_key_bindings() -> KeyBindings:
-    """Binds Ctrl+V to paste clipboard text. Clipboard images are not supported yet."""
+def _attach_images(
+    event: KeyPressEvent, attachments: list[Path], image_paths: list[Path]
+) -> None:
+    """Adds images to the pending attachments and types a placeholder for each."""
+    for image_path in image_paths:
+        attachments.append(image_path)
+        event.current_buffer.insert_text(f"[Image #{len(attachments)}] ")
+
+
+def make_paste_key_bindings(
+    attachments: list[Path], attachment_dir: Path
+) -> KeyBindings:
+    """
+    Binds Ctrl+V to paste text or images. A pasted image is saved under attachment_dir,
+    appended to attachments, and shown in the prompt as a placeholder.
+    """
     bindings = KeyBindings()
     missing_tool_reported = False
 
@@ -86,8 +103,18 @@ def make_paste_key_bindings() -> KeyBindings:
                 missing_tool_reported = True
                 event.app.print_text(CLIPBOARD_TOOL_MISSING_MESSAGE)
             return
-        if clipboard_has_image(tool):
-            event.app.print_text(IMAGE_NOT_SUPPORTED_MESSAGE)
+        image_type = clipboard_image_type(tool)
+        if image_type is not None:
+            data = read_clipboard_bytes(tool, image_type)
+            if data is None:
+                event.app.print_text(CLIPBOARD_IMAGE_READ_FAILED_MESSAGE)
+                return
+            saved = save_clipboard_image(data, image_type, attachment_dir)
+            _attach_images(event, attachments, [saved])
+            return
+        image_files = clipboard_image_files(tool)
+        if image_files:
+            _attach_images(event, attachments, image_files)
             return
         text = read_clipboard_text(tool)
         if text:
@@ -96,7 +123,9 @@ def make_paste_key_bindings() -> KeyBindings:
     return bindings
 
 
-def make_prompt(commands: dict[str, str]) -> Callable[[], str]:
+def make_prompt(
+    commands: dict[str, str], attachments: list[Path], attachment_dir: Path
+) -> Callable[[], str]:
     """
     Returns a function that reads one line of input.
     In a terminal the line gets a dropdown of slash commands. Otherwise (piped
@@ -107,7 +136,7 @@ def make_prompt(commands: dict[str, str]) -> Callable[[], str]:
     session: PromptSession[str] = PromptSession(
         completer=SlashCommandCompleter(commands),
         complete_while_typing=True,
-        key_bindings=make_paste_key_bindings(),
+        key_bindings=make_paste_key_bindings(attachments, attachment_dir),
     )
     return lambda: session.prompt("> ")
 
@@ -241,7 +270,9 @@ def main(session_id: str | None, working_dir: Path | None):
         **dict.fromkeys(sorted(EXIT_COMMANDS), "Quit the agent."),
         **{f"/{name}": skill.description for name, skill in skills.items()},
     }
-    read_input = make_prompt(commands)
+    attachments: list[Path] = []
+    attachment_dir = settings.sessions_dir / session.session_id / "attachments"
+    read_input = make_prompt(commands, attachments, attachment_dir)
     click.echo(
         f"Type a prompt, '{SKILLS_COMMAND}' to list skills, "
         "'/<skill name>' to run a skill, or '/exit' to quit."
@@ -276,9 +307,15 @@ def main(session_id: str | None, working_dir: Path | None):
                 description=f"Run the '{skill.name}' skill. Request details: {request}",
                 instructions=instructions,
                 max_iterations=settings.max_iterations,
+                image_paths=[str(path) for path in attachments],
             )
         else:
-            task = Task(description=description, max_iterations=settings.max_iterations)
+            task = Task(
+                description=description,
+                max_iterations=settings.max_iterations,
+                image_paths=[str(path) for path in attachments],
+            )
+        attachments.clear()
 
         logger.info("Running task", task=task.description)
         try:

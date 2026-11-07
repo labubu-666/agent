@@ -119,6 +119,33 @@ def test_resumed_session_with_deleted_image_sends_note(tmp_path, monkeypatch):
     assert _image_parts(user_message) == []
 
 
+def test_task_images_are_sent_with_first_message(tmp_path, monkeypatch):
+    image = tmp_path / "pasted.png"
+    image.write_bytes(PNG_BYTES)
+    session = Session.create(root=tmp_path)
+    agent = Agent(openai_api_key="test", model="model-x", session=session)
+    sent = {}
+
+    def fake_create(**kwargs):
+        sent["messages"] = kwargs["messages"]
+        return _fake_response(FINISH_JSON)
+
+    monkeypatch.setattr(agent.client.chat.completions, "create", fake_create)
+    task = Task(
+        description="describe", max_iterations=2, image_paths=[str(image.resolve())]
+    )
+
+    agent.run_task(task)
+
+    first_user = sent["messages"][1]
+    assert _image_parts(first_user) == [
+        {"type": "image_url", "image_url": {"url": PNG_URI}}
+    ]
+    assert Session.load(session.session_id, root=tmp_path).messages()[
+        0
+    ].image_paths == [str(image.resolve())]
+
+
 def test_messages_without_images_stay_plain_strings(tmp_path, monkeypatch):
     session = Session.create(root=tmp_path)
     session.append("user", "plain question", "model-x")
