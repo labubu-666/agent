@@ -123,7 +123,7 @@ def format_skills(skills: dict[str, Skill]) -> str:
 
 def configure_logging(log_path: Path) -> None:
     """
-    Sends all logs (structlog and stdlib, including openai/httpx) to a JSONL file.
+    Sends all logs (structlog and stdlib, including openai/httpx2) to a JSONL file.
     Only WARNING and above are echoed to stderr so the interactive TUI stays clean.
     """
     log_path.parent.mkdir(parents=True, exist_ok=True)
