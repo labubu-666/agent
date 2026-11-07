@@ -1,5 +1,6 @@
 import json
 import re
+from pathlib import Path
 from typing import Any, Literal, cast
 
 import structlog
@@ -10,6 +11,7 @@ from pydantic import BaseModel, Field, ValidationError
 from .session import Session
 from .skills import Skill
 from .tools import TOOL_REGISTRY, Tool, UseSkillTool
+from .tools.image import ImageLoadError, load_image_data_uri
 
 logger = structlog.get_logger(__name__)
 
@@ -76,17 +78,44 @@ class Agent:
         # The system prompt is not persisted; it is rebuilt on every request.
         # Error entries are kept in the file for debugging but never sent to the API.
         self.chat_history: list[ChatCompletionMessageParam] = [
-            cast(ChatCompletionMessageParam, {"role": m.role, "content": m.content})
+            self._build_message(m.role, m.content, m.image_paths)
             for m in self.session.messages()
             if m.role != "error"
         ]
 
-    def _record(self, role: Literal["user", "assistant"], content: str) -> None:
+    @staticmethod
+    def _build_message(
+        role: str, content: str, image_paths: list[str] | None = None
+    ) -> ChatCompletionMessageParam:
+        """Builds a chat message. Messages with images use content parts with image_url items.
+
+        Images are read from disk here. An image that can no longer be loaded is replaced
+        with a text note so that the rest of the history still works.
+        """
+        if not image_paths:
+            return cast(ChatCompletionMessageParam, {"role": role, "content": content})
+
+        parts: list[dict[str, Any]] = [{"type": "text", "text": content}]
+        for image_path in image_paths:
+            try:
+                data_uri = load_image_data_uri(Path(image_path))
+            except ImageLoadError as e:
+                parts.append(
+                    {"type": "text", "text": f"[Image '{image_path}' unavailable: {e}]"}
+                )
+                continue
+            parts.append({"type": "image_url", "image_url": {"url": data_uri}})
+        return cast(ChatCompletionMessageParam, {"role": role, "content": parts})
+
+    def _record(
+        self,
+        role: Literal["user", "assistant"],
+        content: str,
+        image_paths: list[str] | None = None,
+    ) -> None:
         """Adds a message to the in-memory history and persists it to the session."""
-        self.chat_history.append(
-            cast(ChatCompletionMessageParam, {"role": role, "content": content})
-        )
-        self.session.append(role, content, self.model)
+        self.chat_history.append(self._build_message(role, content, image_paths))
+        self.session.append(role, content, self.model, image_paths)
 
     def _record_error(self, error: Exception) -> None:
         """Persists a failure to the session file without adding it to the chat history."""
@@ -146,14 +175,17 @@ class Agent:
             raise original
 
     def _get_llm_response(
-        self, system_prompt: str, user_prompt: str
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        image_paths: list[str] | None = None,
     ) -> AgentAction | str:
         """Sends the prompt and parses the reply.
 
         Returns the parsed action. If the reply cannot be parsed, returns a correction
         message to send back to the model. An API failure ends the task via a 'finish' action.
         """
-        self._record("user", user_prompt)
+        self._record("user", user_prompt, image_paths)
         try:
             content = self._call_llm(system_prompt)
         except Exception as e:
@@ -208,8 +240,11 @@ class Agent:
             + f"{AgentAction.model_json_schema()}"
         )
 
-    def _run_tool(self, tool_call: ToolCall) -> str:
-        """Runs a tool and returns the observation to send back to the model."""
+    def _run_tool(self, tool_call: ToolCall) -> tuple[str, list[str]]:
+        """Runs a tool and returns the observation to send back to the model.
+
+        Also returns any image paths the tool attached to the observation.
+        """
         tool_name = tool_call.tool_name
         arguments = tool_call.arguments
         print(f"\n--- Calling {tool_name} with arguments {arguments} ---")
@@ -217,34 +252,45 @@ class Agent:
         if tool_name not in self.tools:
             observation = f"Error: Tool '{tool_name}' not found. Available tools are: {list(self.tools.keys())}"
             print(f"Tool Error: {observation}")
-            return f"Your last tool call failed. Observation: {observation}. Please reconsider your next action."
+            return (
+                f"Your last tool call failed. Observation: {observation}. Please reconsider your next action.",
+                [],
+            )
 
         tool = self.tools[tool_name]
         try:
             validated_args = tool.args_schema.model_validate(arguments)
-            observation = tool.run(**validated_args.model_dump())
+            output = tool.execute(**validated_args.model_dump())
             print(f"Tool '{tool_name}' executed successfully.")
-            return f"Tool '{tool_name}' executed. Observation: {observation}\n\nWhat is your next action to fulfill the task?"
+            return (
+                f"Tool '{tool_name}' executed. Observation: {output.text}\n\nWhat is your next action to fulfill the task?",
+                output.image_paths,
+            )
         except Exception as e:
             observation = (
                 f"Error running tool '{tool_name}': {e}. Arguments: {arguments}"
             )
             print(f"Tool Execution Error: {observation}")
-            return f"Tool '{tool_name}' execution failed. Observation: {observation}. Please reconsider your next action."
+            return (
+                f"Tool '{tool_name}' execution failed. Observation: {observation}. Please reconsider your next action.",
+                [],
+            )
 
     def run_task(self, task: Task) -> str | None:
         """Executes the given task iteratively until completion or max iterations reached."""
-        print(f"--- Starting Task ---\n{task.description}\n---------------------")
+        print(f"--- Starting task ---\n{task.description}\n---------------------")
 
         system_prompt = self._build_system_prompt()
         user_prompt = f"Begin the task: {task.description}"
         if task.instructions:
             user_prompt += f"\n\nInstructions:\n{task.instructions}"
 
+        image_paths: list[str] = []
         for i in range(task.max_iterations):
             print(f"\n--- Iteration {i + 1}/{task.max_iterations} ---")
 
-            response = self._get_llm_response(system_prompt, user_prompt)
+            response = self._get_llm_response(system_prompt, user_prompt, image_paths)
+            image_paths = []
             if isinstance(response, str):
                 user_prompt = response
                 continue
@@ -264,7 +310,7 @@ class Agent:
                 user_prompt = "Error: You indicated 'call_tool' but did not provide 'tool_call' details. Please correct your response."
                 continue
 
-            user_prompt = self._run_tool(agent_action.tool_call)
+            user_prompt, image_paths = self._run_tool(agent_action.tool_call)
 
         print(
             f"\n--- Max iterations ({task.max_iterations}) reached. Task not completed. ---"

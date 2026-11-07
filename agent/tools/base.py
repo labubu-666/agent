@@ -1,6 +1,16 @@
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+
+class ToolOutput(BaseModel):
+    """The result of a tool run: text for the model, plus optional image files to attach."""
+
+    text: str = Field(..., description="The text observation returned to the model.")
+    image_paths: list[str] = Field(
+        default_factory=list,
+        description="Absolute paths of image files to attach to the next message.",
+    )
 
 
 class Tool:
@@ -12,3 +22,7 @@ class Tool:
 
     def run(self, **kwargs: Any) -> str:
         raise NotImplementedError
+
+    def execute(self, **kwargs: Any) -> ToolOutput:
+        """Runs the tool and returns its output. Override when the tool attaches images."""
+        return ToolOutput(text=self.run(**kwargs))

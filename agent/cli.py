@@ -10,9 +10,15 @@ import structlog
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import CompleteEvent, Completer, Completion
 from prompt_toolkit.document import Document
+from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
 from pydantic import ValidationError
 
 from .agent import Agent, Task
+from .clipboard import (
+    clipboard_has_image,
+    find_clipboard_tool,
+    read_clipboard_text,
+)
 from .session import Session
 from .settings import Settings
 from .skills import Skill, default_skill_dirs, discover_skills
@@ -59,6 +65,37 @@ class SlashCommandCompleter(Completer):
                 )
 
 
+IMAGE_NOT_SUPPORTED_MESSAGE = "Pasting images is not supported yet."
+CLIPBOARD_TOOL_MISSING_MESSAGE = (
+    "Pasting images is not supported yet. To detect clipboard images, install "
+    "wl-clipboard (Wayland) or xclip (X11)."
+)
+
+
+def make_paste_key_bindings() -> KeyBindings:
+    """Binds Ctrl+V to paste clipboard text. Clipboard images are not supported yet."""
+    bindings = KeyBindings()
+    missing_tool_reported = False
+
+    @bindings.add("c-v")
+    def _paste(event: KeyPressEvent) -> None:
+        nonlocal missing_tool_reported
+        tool = find_clipboard_tool()
+        if tool is None:
+            if not missing_tool_reported:
+                missing_tool_reported = True
+                event.app.print_text(CLIPBOARD_TOOL_MISSING_MESSAGE)
+            return
+        if clipboard_has_image(tool):
+            event.app.print_text(IMAGE_NOT_SUPPORTED_MESSAGE)
+            return
+        text = read_clipboard_text(tool)
+        if text:
+            event.current_buffer.insert_text(text)
+
+    return bindings
+
+
 def make_prompt(commands: dict[str, str]) -> Callable[[], str]:
     """
     Returns a function that reads one line of input.
@@ -68,7 +105,9 @@ def make_prompt(commands: dict[str, str]) -> Callable[[], str]:
     if not sys.stdin.isatty():
         return lambda: click.prompt(">", default="", show_default=False)
     session: PromptSession[str] = PromptSession(
-        completer=SlashCommandCompleter(commands), complete_while_typing=True
+        completer=SlashCommandCompleter(commands),
+        complete_while_typing=True,
+        key_bindings=make_paste_key_bindings(),
     )
     return lambda: session.prompt("> ")
 
