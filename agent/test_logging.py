@@ -30,7 +30,7 @@ def test_configure_logging_writes_jsonl_file(restore_logging):
 
     cli.configure_logging(log_file)
     structlog.get_logger("tests").info("structlog event", task="demo")
-    logging.getLogger("httpx").debug("stdlib debug event")
+    logging.getLogger("httpx2").debug("stdlib debug event")
 
     for handler in logging.getLogger().handlers:
         handler.flush()
