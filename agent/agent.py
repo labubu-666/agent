@@ -65,6 +65,10 @@ class Task(BaseModel):
     max_iterations: int = Field(
         ..., description="Maximum number of iterations before stopping."
     )
+    image_paths: list[str] = Field(
+        default_factory=list,
+        description="Absolute paths of images attached to the task, sent with the first message.",
+    )
 
 
 class Agent:
@@ -342,7 +346,7 @@ class Agent:
         if task.instructions:
             user_prompt += f"\n\nInstructions:\n{task.instructions}"
 
-        image_paths: list[str] = []
+        image_paths: list[str] = list(task.image_paths)
         for i in range(task.max_iterations):
             print(f"\n--- Iteration {i + 1}/{task.max_iterations} ---")
 
