@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 from agent.agent import Agent, Task
@@ -240,3 +241,97 @@ def test_agent_uses_openai_base_url_env_when_not_given(monkeypatch):
     agent = Agent(openai_api_key="test", model="model-x", session=None)
 
     assert str(agent.client.base_url).rstrip("/") == "http://localhost:9999/v1"
+
+
+def test_system_prompt_includes_startup_instructions(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    (repo / "AGENTS.md").write_text("Use tabs.\n")
+    monkeypatch.chdir(repo)
+    agent = Agent(
+        openai_api_key="test",
+        model="model-x",
+        session=Session.create(root=tmp_path),
+        working_dir=repo,
+        home_dir=tmp_path / "home",
+    )
+    sent = {}
+
+    def fake_create(**kwargs):
+        sent["system"] = kwargs["messages"][0]["content"]
+        return _fake_response(FINISH_JSON)
+
+    monkeypatch.setattr(agent.client.chat.completions, "create", fake_create)
+
+    agent.run_task(Task(description="do it", max_iterations=2))
+
+    assert "Project instructions" in sent["system"]
+    assert "Use tabs." in sent["system"]
+
+
+def test_startup_instructions_are_reread_on_each_task(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    agents_file = repo / "AGENTS.md"
+    agents_file.write_text("first version\n")
+    agent = Agent(
+        openai_api_key="test",
+        model="model-x",
+        session=Session.create(root=tmp_path),
+        working_dir=repo,
+        home_dir=tmp_path / "home",
+    )
+    sent = []
+
+    def fake_create(**kwargs):
+        sent.append(kwargs["messages"][0]["content"])
+        return _fake_response(FINISH_JSON)
+
+    monkeypatch.setattr(agent.client.chat.completions, "create", fake_create)
+
+    agent.run_task(Task(description="one", max_iterations=2))
+    agents_file.write_text("second version\n")
+    agent.run_task(Task(description="two", max_iterations=2))
+
+    assert "first version" in sent[0]
+    assert "second version" in sent[1]
+
+
+def test_reading_subfolder_file_adds_its_instructions_once(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    (repo / "sub").mkdir()
+    (repo / "sub" / "notes.txt").write_text("hello\n")
+    (repo / "sub" / "AGENTS.md").write_text("sub rules\n")
+    agent = Agent(
+        openai_api_key="test",
+        model="model-x",
+        session=Session.create(root=tmp_path),
+        working_dir=repo,
+        home_dir=tmp_path / "home",
+    )
+    read_call = json.dumps(
+        {
+            "action": "call_tool",
+            "reasoning": "r",
+            "tool_call": {
+                "tool_name": "read_file",
+                "arguments": {"file_path": str(repo / "sub" / "notes.txt")},
+            },
+        }
+    )
+    replies = iter([read_call, read_call, FINISH_JSON])
+    sent = []
+
+    def fake_create(**kwargs):
+        sent.append(kwargs["messages"])
+        return _fake_response(next(replies))
+
+    monkeypatch.setattr(agent.client.chat.completions, "create", fake_create)
+
+    agent.run_task(Task(description="read it", max_iterations=5))
+
+    user_texts = [m["content"] for m in sent[-1] if m["role"] == "user"]
+    observations = [t for t in user_texts if "Observation" in t]
+    assert len(observations) == 2
+    assert sum("sub rules" in o for o in observations) == 1

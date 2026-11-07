@@ -11,6 +11,11 @@ from openai.types.chat import ChatCompletionMessageParam
 from pydantic import BaseModel, Field, ValidationError
 from ripgrepy import RipGrepNotFound
 
+from .agents_md import (
+    PATH_ARGUMENT_NAMES,
+    load_startup_instructions,
+    load_subdirectory_instructions,
+)
 from .session import Session
 from .skills import Skill
 from .tools import TOOL_REGISTRY, Tool, UseSkillTool
@@ -70,11 +75,18 @@ class Agent:
         session: Session | None = None,
         base_url: str | None = None,
         skills: dict[str, Skill] | None = None,
+        working_dir: Path | None = None,
+        home_dir: Path | None = None,
     ):
         self.client = OpenAI(api_key=openai_api_key, base_url=base_url)
         self.model = model
         self.session = session or Session.create()
         self.skills = skills or {}
+        # None means the current working directory and the user's home directory.
+        self.working_dir = working_dir
+        self.home_dir = home_dir
+        # Resolved paths of instruction files already sent to the model in this task.
+        self.loaded_instruction_files: set[Path] = set()
         self.tools: dict[str, Tool] = dict(TOOL_REGISTRY)
         if self.skills:
             self.tools[UseSkillTool.name] = UseSkillTool(self.skills)
@@ -214,7 +226,7 @@ class Agent:
                 f"AgentAction schema. Parsing failed with: {e}. Please try again."
             )
 
-    def _build_system_prompt(self) -> str:
+    def _build_system_prompt(self, project_instructions: str | None = None) -> str:
         tool_descriptions = [
             f"- {name}: {tool.description}\n  Parameters: {tool.args_schema.model_json_schema()}"
             for name, tool in self.tools.items()
@@ -230,6 +242,13 @@ class Agent:
                 + "\nIf a task matches a skill's description, call the 'use_skill' tool "
                 "with the skill's name first and follow its instructions."
             )
+        instructions_section = ""
+        if project_instructions:
+            instructions_section = (
+                "\n\nProject instructions (from AGENTS.md and CLAUDE.md files). "
+                "Follow them. Where files conflict, later files are more specific "
+                "and take precedence.\n" + project_instructions
+            )
         return (
             "You are an AI assistant designed to help with tasks by using available tools. "
             "Your goal is to complete the user's request. "
@@ -239,6 +258,7 @@ class Agent:
             "\nAvailable tools:\n"
             + "\n".join(tool_descriptions)
             + skills_section
+            + instructions_section
             + "\n\nYou must always respond with valid JSON matching this AgentAction schema:\n"
             + f"{AgentAction.model_json_schema()}"
         )
@@ -265,8 +285,10 @@ class Agent:
             validated_args = tool.args_schema.model_validate(arguments)
             output = tool.execute(**validated_args.model_dump())
             print(f"Tool '{tool_name}' executed successfully.")
+            instructions = self._subdirectory_instructions(arguments)
+            suffix = f"\n\n{instructions}" if instructions else ""
             return (
-                f"Tool '{tool_name}' executed. Observation: {output.text}\n\nWhat is your next action to fulfill the task?",
+                f"Tool '{tool_name}' executed. Observation: {output.text}{suffix}\n\nWhat is your next action to fulfill the task?",
                 output.image_paths,
             )
         except (
@@ -286,11 +308,36 @@ class Agent:
                 [],
             )
 
+    def _working_dir(self) -> Path:
+        return self.working_dir or Path.cwd()
+
+    def _home_dir(self) -> Path:
+        return self.home_dir or Path.home()
+
+    def _subdirectory_instructions(self, arguments: dict[str, Any]) -> str:
+        """Returns AGENTS.md/CLAUDE.md text for folders below the working directory that a
+        tool argument points into and that this task has not loaded yet."""
+        texts = []
+        for name in PATH_ARGUMENT_NAMES:
+            value = arguments.get(name)
+            if isinstance(value, str) and value:
+                texts.append(
+                    load_subdirectory_instructions(
+                        self._working_dir(),
+                        Path(value),
+                        self.loaded_instruction_files,
+                    )
+                )
+        return "\n\n".join(text for text in texts if text)
+
     def run_task(self, task: Task) -> str | None:
         """Executes the given task iteratively until completion or max iterations reached."""
         print(f"--- Starting task ---\n{task.description}\n---------------------")
 
-        system_prompt = self._build_system_prompt()
+        project_instructions, self.loaded_instruction_files = load_startup_instructions(
+            self._working_dir(), self._home_dir()
+        )
+        system_prompt = self._build_system_prompt(project_instructions)
         user_prompt = f"Begin the task: {task.description}"
         if task.instructions:
             user_prompt += f"\n\nInstructions:\n{task.instructions}"
