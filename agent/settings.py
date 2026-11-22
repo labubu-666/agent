@@ -1,9 +1,10 @@
 """Application settings loaded from environment variables and an optional .env file."""
 
 from pathlib import Path
+from typing import Any, Literal
 
 from dotenv import find_dotenv
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .session import SESSIONS_DIR
@@ -23,7 +24,15 @@ class Settings(BaseSettings):
         validate_by_name=True,
     )
 
+    # Overrides the provider that would be detected from OPENAI_BASE_URL.
+    provider: Literal["openai", "openrouter", "anthropic"] | None = None
     openai_api_key: SecretStr = Field(validation_alias="OPENAI_API_KEY")
+
+    @field_validator("provider", mode="before")
+    @classmethod
+    def _lowercase_provider(cls, value: Any) -> Any:
+        return value.lower() if isinstance(value, str) else value
+
     base_url: str | None = Field(None, validation_alias="OPENAI_BASE_URL")
     # models https://openrouter.ai/models?fmt=table&order=top-weekly
     model: str = "anthropic/claude-haiku-5.5"

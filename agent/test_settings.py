@@ -8,6 +8,7 @@ ENV_VARS = [
     "OPENAI_BASE_URL",
     "AGENT_MODEL",
     "AGENT_MAX_ITERATIONS",
+    "AGENT_PROVIDER",
     "AGENT_LOG_FILE",
     "AGENT_SESSIONS_DIR",
     "AGENT_WORKING_DIR",
@@ -31,6 +32,7 @@ def test_defaults_apply_when_only_api_key_is_set(monkeypatch):
     assert settings.base_url is None
     assert settings.model == "anthropic/claude-haiku-5.5"
     assert settings.max_iterations == 42
+    assert settings.provider is None
     assert settings.log_file.as_posix() == ".agent-cache/agent.jsonl"
     assert settings.sessions_dir.as_posix() == ".agent-cache/sessions"
 

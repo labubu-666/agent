@@ -7,10 +7,13 @@ from typing import Any
 
 import click
 import structlog
+import yaml
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import CompleteEvent, Completer, Completion
 from prompt_toolkit.document import Document
+from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
+from prompt_toolkit.styles import Style
 from pydantic import ValidationError
 
 from .agent import Agent, Task
@@ -24,6 +27,7 @@ from .clipboard import (
 )
 from .mcp_client import MCPConnectionManager
 from .mcp_config import MCPServerConfig, default_mcp_config_files, discover_mcp_servers
+from .provider import ModelInfo, fetch_model_info, resolve_provider
 from .session import Session
 from .settings import Settings
 from .skills import Skill, default_skill_dirs, discover_skills
@@ -126,13 +130,48 @@ def make_paste_key_bindings(
     return bindings
 
 
+STATUS_BAR_STYLE = Style.from_dict(
+    {
+        "bottom-toolbar": "#ffffff bg:#005f87",
+        "bottom-toolbar.label": "bold #ffd75f bg:#005f87",
+        "bottom-toolbar.value": "bold #ffffff bg:#005f87",
+    }
+)
+
+
+def status_bar_text(
+    model: str, context_tokens: int, context_window: int, cost: float
+) -> FormattedText:
+    """Returns the bottom status bar: model, context used as a percentage, and cost.
+
+    An unknown context window (0) shows as '?' instead of a percentage.
+    """
+    if context_window > 0:
+        context = f"{min(100, context_tokens * 100 // context_window)}%"
+    else:
+        context = "?"
+    return FormattedText(
+        [
+            ("class:bottom-toolbar.label", " Model: "),
+            ("class:bottom-toolbar.value", f"{model} "),
+            ("class:bottom-toolbar.label", " Context: "),
+            ("class:bottom-toolbar.value", f"{context} "),
+            ("class:bottom-toolbar.label", " Cost: "),
+            ("class:bottom-toolbar.value", f"${cost:.4f} "),
+        ]
+    )
+
+
 def make_prompt(
-    commands: dict[str, str], attachments: list[Path], attachment_dir: Path
+    commands: dict[str, str],
+    attachments: list[Path],
+    attachment_dir: Path,
+    status_text: Callable[[], FormattedText],
 ) -> Callable[[], str]:
     """
     Returns a function that reads one line of input.
-    In a terminal the line gets a dropdown of slash commands. Otherwise (piped
-    input, tests) it falls back to a plain prompt.
+    In a terminal the line gets a dropdown of slash commands and a status bar at
+    the bottom. Otherwise (piped input, tests) it falls back to a plain prompt.
     """
     if not sys.stdin.isatty():
         return lambda: click.prompt(">", default="", show_default=False)
@@ -140,6 +179,8 @@ def make_prompt(
         completer=SlashCommandCompleter(commands),
         complete_while_typing=True,
         key_bindings=make_paste_key_bindings(attachments, attachment_dir),
+        bottom_toolbar=status_text,
+        style=STATUS_BAR_STYLE,
     )
     return lambda: session.prompt("> ")
 
@@ -287,23 +328,41 @@ def main(session_id: str | None, working_dir: Path | None):
         mcp_tools = mcp_manager.start()
     click.echo(f"MCP tools: {', '.join(tool.name for tool in mcp_tools) or 'none'}")
 
+    api_key = settings.openai_api_key.get_secret_value()
+    provider = resolve_provider(settings.provider, settings.base_url)
+    info = fetch_model_info(provider, settings.model, api_key)
+    config = {
+        "settings": settings.model_dump(mode="json"),
+        "model": {
+            "provider": provider,
+            **info.model_dump(),
+        },
+    }
+    click.echo(yaml.safe_dump(config, sort_keys=False))
+    logger.info("Config", config=config)
+
     try:
         agent = Agent(
-            openai_api_key=settings.openai_api_key.get_secret_value(),
+            openai_api_key=api_key,
             model=settings.model,
             session=session,
             base_url=settings.base_url,
             skills=skills,
             mcp_tools=mcp_tools,
+            provider=provider,
         )
-        _run_repl(agent, skills, settings, session)
+        _run_repl(agent, skills, settings, session, info)
     finally:
         if mcp_manager is not None:
             mcp_manager.close()
 
 
 def _run_repl(
-    agent: Agent, skills: dict[str, Skill], settings: Settings, session: Session
+    agent: Agent,
+    skills: dict[str, Skill],
+    settings: Settings,
+    session: Session,
+    info: ModelInfo,
 ) -> None:
     """Runs the prompt loop until the user exits."""
 
@@ -315,7 +374,17 @@ def _run_repl(
     }
     attachments: list[Path] = []
     attachment_dir = settings.sessions_dir / session.session_id / "attachments"
-    read_input = make_prompt(commands, attachments, attachment_dir)
+    read_input = make_prompt(
+        commands,
+        attachments,
+        attachment_dir,
+        lambda: status_bar_text(
+            settings.model,
+            agent.context_tokens,
+            info.context_window,
+            agent.cost,
+        ),
+    )
     click.echo(
         f"Type a prompt, '{SKILLS_COMMAND}' to list skills, "
         f"'{CLEAR_COMMAND}' to clear the context, "

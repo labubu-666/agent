@@ -61,7 +61,7 @@ def test_clear_command_clears_screen_and_pending_attachments(tmp_path, monkeypat
     monkeypatch.setattr(
         cli,
         "make_prompt",
-        lambda commands, attachments, attachment_dir: _prompt_adding_image(
+        lambda commands, attachments, attachment_dir, status_text: _prompt_adding_image(
             attachments, tmp_path
         ),
     )
