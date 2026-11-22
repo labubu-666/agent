@@ -20,6 +20,10 @@ class Tool:
     description: str
     args_schema: type[BaseModel]
 
+    def json_schema(self) -> dict[str, Any]:
+        """Returns the JSON schema of the arguments shown to the model."""
+        return self.args_schema.model_json_schema()
+
     def run(self, **kwargs: Any) -> str:
         raise NotImplementedError
 

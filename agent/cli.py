@@ -22,6 +22,8 @@ from .clipboard import (
     read_clipboard_text,
     save_clipboard_image,
 )
+from .mcp_client import MCPConnectionManager
+from .mcp_config import MCPServerConfig, default_mcp_config_files, discover_mcp_servers
 from .session import Session
 from .settings import Settings
 from .skills import Skill, default_skill_dirs, discover_skills
@@ -142,6 +144,21 @@ def make_prompt(
     return lambda: session.prompt("> ")
 
 
+def confirm_mcp_servers(
+    servers: dict[str, MCPServerConfig],
+) -> dict[str, MCPServerConfig]:
+    """Lists the MCP servers found and returns the ones the user approves.
+
+    Config files can come from any cloned repository, so nothing starts without a yes.
+    """
+    approved: dict[str, MCPServerConfig] = {}
+    for name, config in servers.items():
+        click.echo(f"MCP server '{name}': {config.describe()}")
+        if click.confirm("Start this server?", default=False):
+            approved[name] = config
+    return approved
+
+
 def format_skills(skills: dict[str, Skill]) -> str:
     """Lists skills for the /skills command."""
     if not skills:
@@ -252,19 +269,43 @@ def main(session_id: str | None, working_dir: Path | None):
 
     structlog.contextvars.bind_contextvars(session_id=session.session_id)
     skills = discover_skills(default_skill_dirs())
+    mcp_paths = (
+        [settings.mcp_config] if settings.mcp_config else default_mcp_config_files()
+    )
+    mcp_servers = discover_mcp_servers(mcp_paths)
     logger.info("Starting agent", current_working_directory=str(Path.cwd()))
     click.echo(f"Working dir: {Path.cwd()}")
     click.echo(f"Logs: {settings.log_file.resolve()}")
     click.echo(f"Session: {session.session_id}")
     click.echo(f"Skills: {', '.join(skills) or 'none'}")
 
-    agent = Agent(
-        openai_api_key=settings.openai_api_key.get_secret_value(),
-        model=settings.model,
-        session=session,
-        base_url=settings.base_url,
-        skills=skills,
-    )
+    mcp_manager: MCPConnectionManager | None = None
+    mcp_tools = []
+    approved_servers = confirm_mcp_servers(mcp_servers) if mcp_servers else {}
+    if approved_servers:
+        mcp_manager = MCPConnectionManager(approved_servers)
+        mcp_tools = mcp_manager.start()
+    click.echo(f"MCP tools: {', '.join(tool.name for tool in mcp_tools) or 'none'}")
+
+    try:
+        agent = Agent(
+            openai_api_key=settings.openai_api_key.get_secret_value(),
+            model=settings.model,
+            session=session,
+            base_url=settings.base_url,
+            skills=skills,
+            mcp_tools=mcp_tools,
+        )
+        _run_repl(agent, skills, settings, session)
+    finally:
+        if mcp_manager is not None:
+            mcp_manager.close()
+
+
+def _run_repl(
+    agent: Agent, skills: dict[str, Skill], settings: Settings, session: Session
+) -> None:
+    """Runs the prompt loop until the user exits."""
 
     commands = {
         SKILLS_COMMAND: "List available skills.",

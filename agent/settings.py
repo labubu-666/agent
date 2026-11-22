@@ -31,3 +31,5 @@ class Settings(BaseSettings):
     log_file: Path = Path(".agent-cache") / "agent.jsonl"
     sessions_dir: Path = SESSIONS_DIR
     working_dir: Path | None = None
+    # Use this MCP config file instead of searching the default locations.
+    mcp_config: Path | None = None
