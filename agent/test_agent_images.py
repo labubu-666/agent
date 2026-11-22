@@ -16,7 +16,7 @@ READ_IMAGE_JSON = (
 
 def _fake_response(content: str):
     message = SimpleNamespace(content=content)
-    return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+    return SimpleNamespace(choices=[SimpleNamespace(message=message)], usage=None)
 
 
 def _image_parts(message):

@@ -6,7 +6,7 @@ from typing import Any, Literal, cast
 
 import requests
 import structlog
-from openai import OpenAI
+from openai import NOT_GIVEN, OpenAI
 from openai.types.chat import ChatCompletionMessageParam
 from pydantic import BaseModel, Field, ValidationError
 from ripgrepy import RipGrepNotFound
@@ -17,6 +17,7 @@ from .agents_md import (
     load_subdirectory_instructions,
 )
 from .mcp_client import MCPToolError
+from .provider import Provider
 from .session import Session
 from .skills import Skill
 from .tools import TOOL_REGISTRY, Tool, UseSkillTool
@@ -83,6 +84,7 @@ class Agent:
         working_dir: Path | None = None,
         home_dir: Path | None = None,
         mcp_tools: list[Tool] | None = None,
+        provider: Provider = "openai",
     ):
         self.client = OpenAI(api_key=openai_api_key, base_url=base_url)
         self.model = model
@@ -93,6 +95,11 @@ class Agent:
         self.home_dir = home_dir
         # Resolved paths of instruction files already sent to the model in this task.
         self.loaded_instruction_files: set[Path] = set()
+        self.provider = provider
+        # Tokens in the context after the last request, as reported by the API.
+        self.context_tokens = 0
+        # Total cost in USD reported by the API this session. Not reset by clear_context.
+        self.cost = 0.0
         self.tools: dict[str, Tool] = dict(TOOL_REGISTRY)
         for mcp_tool in mcp_tools or []:
             self.tools[mcp_tool.name] = mcp_tool
@@ -143,12 +150,17 @@ class Agent:
     def clear_context(self) -> None:
         """Forgets the chat history sent to the model. The session file is not changed."""
         self.chat_history.clear()
+        self.context_tokens = 0
 
     def _record_error(self, error: Exception) -> None:
         """Persists a failure to the session file without adding it to the chat history."""
         self.session.append("error", f"{type(error).__name__}: {error}", self.model)
 
     def _call_llm(self, system_prompt: str) -> str:
+        # Anthropic's OpenAI-compatible endpoint rejects json_object, so it is left out there.
+        response_format: Any = (
+            NOT_GIVEN if self.provider == "anthropic" else {"type": "json_object"}
+        )
         response = self.client.chat.completions.create(
             model=self.model,
             messages=[
@@ -156,8 +168,15 @@ class Agent:
                 *self.chat_history,
             ],
             temperature=0.5,
-            response_format={"type": "json_object"},
+            response_format=response_format,
         )
+        usage = response.usage
+        if usage is not None:
+            self.context_tokens = usage.total_tokens
+            # OpenRouter reports the cost of each request as usage.cost.
+            cost = getattr(usage, "cost", None)
+            if isinstance(cost, int | float):
+                self.cost += float(cost)
         content = response.choices[0].message.content
         if not content:
             raise ValueError("Received empty content from LLM.")

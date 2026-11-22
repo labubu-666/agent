@@ -8,7 +8,7 @@ from agent.skills import Skill
 
 def _fake_response(content: str):
     message = SimpleNamespace(content=content)
-    return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+    return SimpleNamespace(choices=[SimpleNamespace(message=message)], usage=None)
 
 
 FINISH_JSON = '{"action": "finish", "final_answer": "done", "reasoning": "r"}'
