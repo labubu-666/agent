@@ -51,6 +51,60 @@ def test_clear_command_clears_context_without_running_task(tmp_path, monkeypatch
     assert "Context cleared." in result.output
 
 
+def test_clear_command_clears_screen_and_pending_attachments(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "no-home")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("AGENT_LOG_FILE", str(tmp_path / "agent.jsonl"))
+    monkeypatch.setenv("AGENT_SESSIONS_DIR", str(tmp_path / "sessions"))
+    monkeypatch.setattr(cli, "configure_logging", lambda log_path: None)
+    monkeypatch.setattr(
+        cli,
+        "make_prompt",
+        lambda commands, attachments, attachment_dir: _prompt_adding_image(
+            attachments, tmp_path
+        ),
+    )
+
+    screen_clears = []
+    monkeypatch.setattr(cli.click, "clear", lambda: screen_clears.append(True))
+
+    tasks = []
+
+    class FakeAgent:
+        def __init__(self, **kwargs):
+            pass
+
+        def run_task(self, task):
+            tasks.append(task)
+
+        def clear_context(self):
+            pass
+
+    monkeypatch.setattr(cli, "Agent", FakeAgent)
+
+    result = CliRunner().invoke(cli.main, [])
+
+    assert result.exit_code == 0, result.output
+    assert screen_clears == [True]
+    assert len(tasks) == 1
+    assert tasks[0].image_paths == []
+
+
+def _prompt_adding_image(attachments, tmp_path):
+    """Returns a prompt reader that attaches one image before the first input."""
+    lines = iter(["/clear", "hello", "/exit"])
+    first = [True]
+
+    def read_input():
+        if first[0]:
+            first[0] = False
+            attachments.append(tmp_path / "pending.png")
+        return next(lines)
+
+    return read_input
+
+
 def test_clear_command_is_offered_in_completions():
     commands = {cli.CLEAR_COMMAND: "Clear the conversation context."}
     completer = cli.SlashCommandCompleter(commands)
