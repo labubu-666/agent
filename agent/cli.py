@@ -309,7 +309,7 @@ def _run_repl(
 
     commands = {
         SKILLS_COMMAND: "List available skills.",
-        CLEAR_COMMAND: "Clear the conversation context.",
+        CLEAR_COMMAND: "Clear the conversation context and the screen.",
         **dict.fromkeys(sorted(EXIT_COMMANDS), "Quit the agent."),
         **{f"/{name}": skill.description for name, skill in skills.items()},
     }
@@ -337,6 +337,8 @@ def _run_repl(
             continue
         if description == CLEAR_COMMAND:
             agent.clear_context()
+            attachments.clear()
+            click.clear()
             click.echo("Context cleared.")
             continue
 
