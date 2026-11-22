@@ -16,6 +16,7 @@ from .agents_md import (
     load_startup_instructions,
     load_subdirectory_instructions,
 )
+from .mcp_client import MCPToolError
 from .session import Session
 from .skills import Skill
 from .tools import TOOL_REGISTRY, Tool, UseSkillTool
@@ -81,6 +82,7 @@ class Agent:
         skills: dict[str, Skill] | None = None,
         working_dir: Path | None = None,
         home_dir: Path | None = None,
+        mcp_tools: list[Tool] | None = None,
     ):
         self.client = OpenAI(api_key=openai_api_key, base_url=base_url)
         self.model = model
@@ -92,6 +94,8 @@ class Agent:
         # Resolved paths of instruction files already sent to the model in this task.
         self.loaded_instruction_files: set[Path] = set()
         self.tools: dict[str, Tool] = dict(TOOL_REGISTRY)
+        for mcp_tool in mcp_tools or []:
+            self.tools[mcp_tool.name] = mcp_tool
         if self.skills:
             self.tools[UseSkillTool.name] = UseSkillTool(self.skills)
         # The system prompt is not persisted; it is rebuilt on every request.
@@ -236,7 +240,7 @@ class Agent:
 
     def _build_system_prompt(self, project_instructions: str | None = None) -> str:
         tool_descriptions = [
-            f"- {name}: {tool.description}\n  Parameters: {tool.args_schema.model_json_schema()}"
+            f"- {name}: {tool.description}\n  Parameters: {tool.json_schema()}"
             for name, tool in self.tools.items()
         ]
         skills_section = ""
@@ -306,6 +310,7 @@ class Agent:
             requests.RequestException,
             ImageLoadError,
             RipGrepNotFound,
+            MCPToolError,
         ) as e:
             observation = (
                 f"Error running tool '{tool_name}': {e}. Arguments: {arguments}"
