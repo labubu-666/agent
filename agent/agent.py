@@ -136,6 +136,10 @@ class Agent:
         self.chat_history.append(self._build_message(role, content, image_paths))
         self.session.append(role, content, self.model, image_paths)
 
+    def clear_context(self) -> None:
+        """Forgets the chat history sent to the model. The session file is not changed."""
+        self.chat_history.clear()
+
     def _record_error(self, error: Exception) -> None:
         """Persists a failure to the session file without adding it to the chat history."""
         self.session.append("error", f"{type(error).__name__}: {error}", self.model)
