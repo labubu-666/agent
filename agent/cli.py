@@ -30,6 +30,7 @@ logger = structlog.get_logger(__name__)
 
 EXIT_COMMANDS = {"/exit", "/quit"}
 SKILLS_COMMAND = "/skills"
+CLEAR_COMMAND = "/clear"
 
 
 def parse_skill_command(
@@ -267,6 +268,7 @@ def main(session_id: str | None, working_dir: Path | None):
 
     commands = {
         SKILLS_COMMAND: "List available skills.",
+        CLEAR_COMMAND: "Clear the conversation context.",
         **dict.fromkeys(sorted(EXIT_COMMANDS), "Quit the agent."),
         **{f"/{name}": skill.description for name, skill in skills.items()},
     }
@@ -275,6 +277,7 @@ def main(session_id: str | None, working_dir: Path | None):
     read_input = make_prompt(commands, attachments, attachment_dir)
     click.echo(
         f"Type a prompt, '{SKILLS_COMMAND}' to list skills, "
+        f"'{CLEAR_COMMAND}' to clear the context, "
         "'/<skill name>' to run a skill, or '/exit' to quit."
     )
     while True:
@@ -290,6 +293,10 @@ def main(session_id: str | None, working_dir: Path | None):
             continue
         if description == SKILLS_COMMAND:
             click.echo(format_skills(skills))
+            continue
+        if description == CLEAR_COMMAND:
+            agent.clear_context()
+            click.echo("Context cleared.")
             continue
 
         skill_command = parse_skill_command(description, skills)
